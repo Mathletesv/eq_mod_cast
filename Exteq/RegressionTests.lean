@@ -1,6 +1,38 @@
 import Mathlib
 import Exteq.Tactic
 
+-- Cast / Rewrite handling
+
+#guard_msgs in
+example {C : Nat → Sort*} {a b c : Nat} (x : C (a + b))
+    (h₁ : a + b = c) :
+    h₁ ▸ x = x := by
+  eq_mod_cast
+
+#guard_msgs in
+example {C : Nat → Type} {a b : Nat} (h : a = b) (x : C a) :
+    (@Eq.recOn Nat a (fun x _ => C x) b h x : C b) ≍ x := by
+  eq_mod_cast
+
+#guard_msgs in
+example {α β : Type} (h : α = β) (b : β) : Eq.mpr h b ≍ b := by
+  eq_mod_cast
+
+#guard_msgs in
+example {α β : Type} (h : α = β) (a : α) : Eq.mp h a ≍ a := by
+  eq_mod_cast
+
+#guard_msgs in
+example {motive : Nat → Prop} {a b : Nat} (h : a = b) (m : motive a) :
+    (Eq.subst h m : motive b) ≍ m := by
+  eq_mod_cast
+
+#guard_msgs in
+example {α β : Type} (h : α = β) (a : α) : cast h a ≍ a := by
+  eq_mod_cast
+
+-- Nesting / Function handling
+
 #guard_msgs in
 example {C : Nat → Sort*} {a b c : Nat} (x : C (a + b))
     (h₁ : a + b = c) (h₂ : b + a = c) :
@@ -66,4 +98,39 @@ example (n m : Nat) (eq : n = m) (x : Fin n) (β : Fin m → Type) (f : (x : Fin
       (f (Eq.rec (α := Type) (motive := fun α _ => α) x (congrArg Fin eq)))
       (by cases eq; rfl) =
     f (Eq.rec (α := Nat) (motive := fun n _ => Fin n) x eq) := by
+  eq_mod_cast
+
+variable {n m : Nat} (eq : n = m)
+
+#guard_msgs in
+example : (fun (y : Fin n) => y) ≍ (fun (y : Fin m) => y) := by
+  eq_mod_cast
+
+#guard_msgs in
+example : (fun (lt : 0 < n) => @Fin.mk n 0 (@id (0 < n) lt))
+        ≍ (fun (lt : 0 < m) => @Fin.mk m 0 (@id (0 < m) lt)) := by
+  eq_mod_cast
+
+#guard_msgs in
+example : (∀ (lt : 0 < n), @Eq (Fin n) ⟨0, lt⟩ ⟨0, lt⟩)
+        = (∀ (lt : 0 < m), @Eq (Fin m) ⟨0, lt⟩ ⟨0, lt⟩) := by
+  eq_mod_cast
+
+#guard_msgs in
+example
+  (F : Nat → Type) (G : (n : Nat) → F n → Type) (r : (n : Nat) → (f : F n) → G n f → Nat)
+  (f : F n) (g : G n f) (g' : G m (eq ▸ f)) (h : g ≍ g') :
+  (let a : Nat := n
+    let B : Type := G a f
+    let c : B := g
+    let c' : G m (eq ▸ f) := g'
+    r n f c = r m (eq ▸ f) c') := by
+  eq_mod_cast
+
+#guard_msgs in
+example : Fin (n + n) = Fin (2 * n) := by
+  eq_mod_cast +omega
+
+#guard_msgs in
+example (f g : (n : Nat) → Fin n → Nat) (h : f ≍ g) (i : Fin n) : f n i = g n i := by
   eq_mod_cast
