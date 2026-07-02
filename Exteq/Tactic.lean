@@ -66,9 +66,7 @@ def normalizeCastHead (e : Expr) : MetaM Expr := do
 
 -- Peels one layer of a cast in Eq.rec form or a 4-argument cast application
 def peelCast? (e : Expr) : MetaM (Option (Expr × Expr)) := do
-  trace[debug] "e raw: {e}"
   let e ← normalizeCastHead e
-  trace[debug] "e normed: {e}"
   match e.getAppFnArgs with
   | (``Eq.rec, #[α, a, motive, refl, b, h]) =>
     try
@@ -111,47 +109,53 @@ def unfoldProj? (e : Expr) : MetaM (Option Expr) := do
   | _ => return none
 
 -- Collects `a = b` proofs in order to help with congruence
-partial def collectIndexEqs (e : Expr) : Array Expr := Id.run do
+partial def collectIndexEqs (e : Expr) : MetaM (Array Expr) := do
   let mut acc := #[]
   let e := e.consumeMData
+  let e ← normalizeCastHead e
   match e.getAppFnArgs with
   | (``Eq.rec, #[_, _, _, refl, _, h]) =>
     acc := acc.push h
-    acc := acc ++ collectIndexEqs refl
+    acc := acc ++ (← collectIndexEqs refl)
   | (``Eq.ndrec, #[_, _, _, refl, _, h]) =>
     acc := acc.push h
-    acc := acc ++ collectIndexEqs refl
+    acc := acc ++ (← collectIndexEqs refl)
+  | (``Eq.subst, #[_, _, _, _, h, refl]) =>
+    acc := acc.push h
+    acc := acc ++ (← collectIndexEqs refl)
   | (_, #[_, _, proof, val]) =>
     acc := acc.push proof
-    acc := acc ++ collectIndexEqs val
+    acc := acc ++ (← collectIndexEqs val)
   | _ =>
+    -- acc := acc ++ (← collectIndexEqs e.getAppFn)
     for a in e.getAppArgs do
-      acc := acc ++ collectIndexEqs a
+      acc := acc ++ (← collectIndexEqs a)
   return acc
 
+structure EqExpr where
+  mk ::
+  e : Expr
+  l : Expr
+  r : Expr
+deriving Repr
+
 -- Tries to use all idxEqs to prove `l = r`
-def findIndexEq? (l r : Expr) (idxEqs : Array Expr) : MetaM (Option Expr) := do
-  for Eq in idxEqs do
-    match (← inferType Eq).eq? with
-    | some (_, el, er) =>
-      trace[debug] "eq: {Eq}, el: {el}, er: {er}"
-      if (← isDefEq el l) && (← isDefEq er r) then
-        return some Eq
-      else if (← isDefEq el r) && (← isDefEq er l) then
-        return some (← mkEqSymm Eq)
-    | none => pure ()
+def findIndexEq? (l r : Expr) (idxEqs : Array EqExpr) : MetaM (Option Expr) := do
+  for eq in idxEqs do
+    trace[debug] "eq: {eq.e}, el: {eq.l}, er: {eq.r}"
+    if (← isDefEq eq.l l) && (← isDefEq eq.r r) then
+      return some eq.e
+    else if (← isDefEq eq.l r) && (← isDefEq eq.r l) then
+      return some (← mkEqSymm eq.e)
   return none
 
 -- Tries to use all idxEqs to prove `l ≍ r`
-def findIndexHEq? (l r : Expr) (idxEqs : Array Expr) : MetaM (Option Expr) := do
-  for hEq in idxEqs do
-    match (← inferType hEq).heq? with
-    | some (_, el, _, er) =>
-      if (← isDefEq el l) && (← isDefEq er r) then
-        return some hEq
-      else if (← isDefEq el r) && (← isDefEq er l) then
-        return some (← mkHEqSymm hEq)
-    | none => pure ()
+def findIndexHEq? (l r : Expr) (idxEqs : Array EqExpr) : MetaM (Option Expr) := do
+  for heq in idxEqs do
+    if (← isDefEq heq.l l) && (← isDefEq heq.r r) then
+      return some heq.e
+    else if (← isDefEq heq.l r) && (← isDefEq heq.r l) then
+      return some (← mkHEqSymm heq.e)
   return none
 
 -- Extract codomain of a nondependent function
@@ -193,7 +197,7 @@ private theorem congr_heq {α β : Sort u} {γ : Sort v} {f : α → γ} {g : β
 mutual
 
 -- `f a b c ... ≍ f x y z ...` by congruency at each argument
-partial def relateAppHEqFn (fn : Expr) (aL aR : Array Expr) (idxEqs idxHEqs : Array Expr)
+partial def relateAppHEqFn (fn : Expr) (aL aR : Array Expr) (idxEqs idxHEqs : Array EqExpr)
   (depth : Option Nat) (useOmega : Bool) : MetaM (Expr × Array MVarId) := do
   let c ← mkHCongrWithArity fn aL.size
   let mut applied := c.proof
@@ -243,7 +247,7 @@ partial def relateAppHEqFn (fn : Expr) (aL aR : Array Expr) (idxEqs idxHEqs : Ar
   return (applied, allHoles.toArray)
 
 -- Build `lhs = rhs`
-partial def relateEq (lhs rhs : Expr) (idxEqs idxHEqs : Array Expr) (depth : Option Nat)
+partial def relateEq (lhs rhs : Expr) (idxEqs idxHEqs : Array EqExpr) (depth : Option Nat)
   (useOmega : Bool) : MetaM (Expr × Array MVarId) := do
   let lhs := lhs.consumeMData
   let rhs := rhs.consumeMData
@@ -368,7 +372,7 @@ partial def relateEq (lhs rhs : Expr) (idxEqs idxHEqs : Array Expr) (depth : Opt
   return (mvar, #[mvar.mvarId!])
 
 -- Recursively peel off casts and build `lhs ≍ rhs`
-partial def relateHEq (lhs rhs : Expr) (idxEqs idxHEqs : Array Expr) (depth : Option Nat)
+partial def relateHEq (lhs rhs : Expr) (idxEqs idxHEqs : Array EqExpr) (depth : Option Nat)
   (useOmega : Bool) : MetaM (Expr × Array MVarId) := do
   let lhs := lhs.consumeMData
   let rhs := rhs.consumeMData
@@ -445,7 +449,7 @@ partial def relateHEq (lhs rhs : Expr) (idxEqs idxHEqs : Array Expr) (depth : Op
           let bR := bodyR.instantiate1 r
           let depth := if let some n := depth then some (n - 1) else none
           -- add premise to idxHEqs and recurse
-          let (hBody, holes) ← relateHEq bL bR idxEqs (idxHEqs.push hEqlr) depth useOmega
+          let (hBody, holes) ← relateHEq bL bR idxEqs (idxHEqs.push (EqExpr.mk hEqlr l r)) depth useOmega
           let lam ← mkLambdaFVars #[l, r, hEqlr] hBody
           pure (lam, holes)
       let proof ← mkAppM ``hfunext #[domEq, pointwiseProof]
@@ -478,7 +482,7 @@ partial def relateHEq (lhs rhs : Expr) (idxEqs idxHEqs : Array Expr) (depth : Op
           let bL := bodyL.instantiate1 l
           let bR := bodyR.instantiate1 r
           let depth := if let some n := depth then some (n - 1) else none
-          let (hBody, holes) ← relateHEq bL bR idxEqs (idxHEqs.push hEqlr) depth useOmega
+          let (hBody, holes) ← relateHEq bL bR idxEqs (idxHEqs.push (EqExpr.mk hEqlr l r)) depth useOmega
           let lam ← mkLambdaFVars #[l, r, hEqlr] hBody
           pure (lam, holes)
       -- use forall lemma
@@ -539,18 +543,18 @@ def collectLocalEqs : MetaM (Array Expr) := do
       eqs := eqs.push ldecl.toExpr
   return eqs
 
-def splitEqs (all : Array Expr) : MetaM (Array Expr × Array Expr) := do
+def splitEqs (all : Array Expr) : MetaM (Array EqExpr × Array EqExpr) := do
   let mut eqs := #[]
   let mut heqs := #[]
   for e in all do
     match (← inferType e).eq? with
-    | some _ => eqs := eqs.push e
+    | some (_, el, er) => eqs := eqs.push (EqExpr.mk e el er)
     | none => pure ()
     match (← inferType e).heq? with
-    | some (tyL, _, tyR, _) =>
-      heqs := heqs.push e
+    | some (tyL, el, tyR, er) =>
+      heqs := heqs.push (EqExpr.mk e el er)
       if ← isDefEq tyL tyR then
-        eqs := eqs.push (← mkAppM ``eq_of_heq #[e])
+        eqs := eqs.push (EqExpr.mk (← mkAppM ``eq_of_heq #[e]) el er)
     | none => pure ()
   return (eqs, heqs)
 
@@ -590,7 +594,7 @@ Elab.Tactic.withMainContext do
       instantiateMVars (← Elab.Tactic.elabTerm stx none)
   trace[debug] "lhs: {lhs}, rhs: {rhs}"
   trace[debug] "extraEqs: {extraEqs}"
-  let idxEqs := collectIndexEqs lhs ++ collectIndexEqs rhs ++ extraEqs ++ localEqs
+  let idxEqs := (← collectIndexEqs lhs) ++ (← collectIndexEqs rhs) ++ extraEqs ++ localEqs
   let (idxEqs, idxHEqs) ← splitEqs idxEqs
   let (hFull, holes) ← relateHEq lhs rhs idxEqs idxHEqs depth useOmega
 
